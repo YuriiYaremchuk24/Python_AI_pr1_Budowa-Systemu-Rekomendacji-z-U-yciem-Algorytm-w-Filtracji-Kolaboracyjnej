@@ -1,0 +1,130 @@
+import tkinter as tk
+from tkinter import ttk
+from tkinter.scrolledtext import ScrolledText
+from tabulate import tabulate  # Zewnętrzna biblioteka do tworzenia tabel
+import pandas as pd
+import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import svds
+
+# Wczytywanie danych
+ratings_path = r"C:\Users\Yurii\ml-25m\ratings.csv"
+movies_path = r"C:\Users\Yurii\ml-25m\movies.csv"
+ratings = pd.read_csv(ratings_path)
+movies = pd.read_csv(movies_path)
+
+# Konwersja timestamp na zrozumiały format daty
+ratings['date_time'] = pd.to_datetime(ratings['timestamp'], unit='s')
+
+# Formatowanie tabeli do wyświetlenia
+def format_table(dataframe, headers):
+    table = tabulate(
+        dataframe,
+        headers=headers,
+        tablefmt='plain',
+        numalign="center",
+        stralign="left",
+    )
+    return table
+
+# Funkcja do analizy filmów użytkownika
+def recommend_movies(user_id):
+    # Filtrowanie danych dla user_id
+    user_ratings = ratings[ratings['userId'] == user_id]
+    user_movies = pd.merge(user_ratings, movies, on='movieId')
+
+    # Wyświetlenie ocenionych filmów
+    formatted_output = format_table(
+        user_movies[['title', 'genres', 'date_time', 'rating']],
+        headers=["Title", "Genres", "Date", "Rating"],
+    )
+    user_movies_text.config(state='normal')
+    user_movies_text.delete(1.0, tk.END)
+    user_movies_text.insert(tk.END, formatted_output)
+    user_movies_text.config(state='disabled')
+
+# Funkcja do generowania rekomendacji
+def generate_recommendations(user_id):
+    # Sprawdzenie, czy userId istnieje
+    if user_id not in ratings['userId'].unique():
+        recommended_movies_text.config(state='normal')
+        recommended_movies_text.delete(1.0, tk.END)
+        recommended_movies_text.insert(tk.END, f"User ID {user_id} nie został znaleziony w zbiorze danych.")
+        recommended_movies_text.config(state='disabled')
+        return
+
+    # Filtrowanie danych do 10 000 użytkowników
+    filtered_ratings = ratings[ratings['userId'] <= 10000].copy()
+
+    # Unikalni użytkownicy i filmy
+    user_ids = filtered_ratings['userId'].unique()
+    movie_ids = filtered_ratings['movieId'].unique()
+
+    # Mapowanie userId i movieId na kompaktowe indeksy
+    user_id_mapping = {user_id: idx for idx, user_id in enumerate(user_ids)}
+    movie_id_mapping = {movie_id: idx for idx, movie_id in enumerate(movie_ids)}
+
+    # Dodanie indeksów do tabeli
+    filtered_ratings['user_idx'] = filtered_ratings['userId'].map(user_id_mapping)
+    filtered_ratings['movie_idx'] = filtered_ratings['movieId'].map(movie_id_mapping)
+
+    # Tworzenie macierzy rzadkiej (User × Movie)
+    row = filtered_ratings['user_idx'].values
+    col = filtered_ratings['movie_idx'].values
+    data = filtered_ratings['rating'].values
+    sparse_matrix = csr_matrix((data, (row, col)), shape=(len(user_ids), len(movie_ids)))
+
+    # Faktoryzacja macierzowa (SVD)
+    U, sigma, Vt = svds(sparse_matrix, k=50)
+    sigma = np.diag(sigma)
+
+    # Odzyskiwanie przewidywanych ocen
+    predicted_ratings = np.dot(np.dot(U, sigma), Vt)
+
+    # Konwersja przewidywań na DataFrame
+    predictions = pd.DataFrame(predicted_ratings, index=user_ids, columns=movie_ids)
+
+    # Rekomendacje dla użytkownika
+    user_predictions = predictions.loc[user_id].sort_values(ascending=False)
+    watched_movies = filtered_ratings[filtered_ratings['userId'] == user_id]['movieId']
+    recommendations = user_predictions[~user_predictions.index.isin(watched_movies)].head(10)
+
+    # Wyświetlenie rekomendowanych filmów
+    recommended_movies = movies[movies['movieId'].isin(recommendations.index)][['title', 'genres']]
+    formatted_output = format_table(
+        recommended_movies,
+        headers=["Title", "Genres"],
+    )
+    recommended_movies_text.config(state='normal')
+    recommended_movies_text.delete(1.0, tk.END)
+    recommended_movies_text.insert(tk.END, formatted_output)
+    recommended_movies_text.config(state='disabled')
+
+# Graficzny interfejs użytkownika (Tkinter)
+root = tk.Tk()
+root.title("System rekomendacji MovieLens")
+
+# Pole do wpisania ID użytkownika
+user_id_label = ttk.Label(root, text="Podaj ID użytkownika:")
+user_id_label.pack()
+user_id_entry = ttk.Entry(root)
+user_id_entry.pack()
+
+# Przycisk do analizy
+analyze_button = ttk.Button(root, text="Analiza użytkownika", command=lambda: recommend_movies(int(user_id_entry.get())))
+analyze_button.pack()
+
+# Wyświetlanie danych o ocenionych filmach (z poziomym przewijaniem)
+user_movies_text = ScrolledText(root, wrap=tk.NONE, width=100, height=15)
+user_movies_text.pack(fill=tk.BOTH, expand=True)
+
+# Przycisk do generowania rekomendacji
+recommend_button = ttk.Button(root, text="Rekomendacje", command=lambda: generate_recommendations(int(user_id_entry.get())))
+recommend_button.pack()
+
+# Wyświetlanie rekomendacji (z poziomym przewijaniem)
+recommended_movies_text = ScrolledText(root, wrap=tk.NONE, width=100, height=15)
+recommended_movies_text.pack(fill=tk.BOTH, expand=True)
+
+# Uruchomienie interfejsu
+root.mainloop()
